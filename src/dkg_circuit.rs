@@ -13,7 +13,8 @@ use halo2_gadgets::poseidon::{
     primitives::ConstantLength, Hash as PoseidonHash, Pow5Chip, Pow5Config,
 };
 use halo2_maingate::{
-    MainGate, MainGateConfig, MainGateInstructions, RangeChip, RangeConfig, RangeInstructions,
+    AssignedValue, MainGate, MainGateConfig, MainGateInstructions, RangeChip, RangeConfig,
+    RangeInstructions,
 };
 #[cfg(feature = "g2chip")]
 use halo2wrong::curves::bn256::G2Affine as BnG2;
@@ -266,12 +267,10 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
             },
         )?;
 
-        let mut instance_offset = 0usize;
-        fixed_chip.expose_public(
-            layouter.namespace(|| "cipher g^a"),
-            ga,
-            &mut instance_offset,
-        )?;
+        let mut to_hash: Vec<AssignedValue<BnScalar>> = vec![];
+        for limb in ga.x().limbs().iter().chain(ga.y().limbs().iter()) {
+            to_hash.push(limb.into())
+        }
 
         for i in 0..NUMBER_OF_MEMBERS {
             let gs = layouter.assign_region(
@@ -288,7 +287,9 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
                 },
             )?;
 
-            fixed_chip.expose_public(layouter.namespace(|| "g^s"), gs, &mut instance_offset)?;
+            for limb in gs.x().limbs().iter().chain(gs.y().limbs().iter()) {
+                to_hash.push(limb.into())
+            }
         }
 
         let (bits, gr) = layouter.assign_region(
@@ -308,11 +309,8 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
             },
         )?;
 
-        grumpkin_chip.expose_public(
-            layouter.namespace(|| "cipher g^r"),
-            gr,
-            &mut instance_offset,
-        )?;
+        to_hash.push(gr.x().clone());
+        to_hash.push(gr.y().clone());
 
         for i in 0..NUMBER_OF_MEMBERS {
             let (pkr, pk) = layouter.assign_region(
@@ -329,7 +327,8 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
                 },
             )?;
 
-            grumpkin_chip.expose_public(layouter.namespace(|| "pk"), pk, &mut instance_offset)?;
+            to_hash.push(pk.x().clone());
+            to_hash.push(pk.y().clone());
 
             let message = [pkr.x, pkr.y];
 
@@ -353,12 +352,7 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
                 },
             )?;
 
-            main_gate.expose_public(
-                layouter.namespace(|| "cipher main"),
-                cipher,
-                instance_offset,
-            )?;
-            instance_offset += 1;
+            to_hash.push(cipher);
         }
 
         // compute g2^a
@@ -377,7 +371,34 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
         )?;
 
         #[cfg(feature = "g2chip")]
-        fixed2_chip.expose_public(layouter.namespace(|| "g2^a"), g2a, &mut instance_offset)?;
+        {
+            let x0 = &g2a.x().i0;
+            let x1 = &g2a.x().i1;
+            let y0 = &g2a.y().i0;
+            let y1 = &g2a.y().i1;
+
+            for a in [x0, x1, y0, y1] {
+                for limb in a.limbs().iter() {
+                    to_hash.push(limb.into());
+                }
+            }
+        }
+
+        let mut instance = to_hash[0].clone();
+        for m in to_hash.iter().skip(1) {
+            let poseidon_chip = Pow5Chip::construct(config.poseidon_config.clone());
+            let hasher = PoseidonHash::<
+                _,
+                _,
+                P128Pow5T3Bn,
+                ConstantLength<POSEIDON_LEN>,
+                POSEIDON_WIDTH,
+                POSEIDON_RATE,
+            >::init(poseidon_chip, layouter.namespace(|| "poseidon init"))?;
+            instance = hasher.hash(layouter.namespace(|| "hash"), [instance, m.clone()])?;
+        }
+
+        main_gate.expose_public(layouter.namespace(|| "main"), instance, 0)?;
 
         config.config_range(&mut layouter)?;
 

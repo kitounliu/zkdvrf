@@ -142,8 +142,19 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
         #[cfg(feature = "g2chip")]
         public_data.extend(g2a_point.public());
 
-        let instance = vec![public_data];
-        instance
+        let mut instance = public_data[0];
+        for m in public_data.iter().skip(1) {
+            instance = Hash::<
+                _,
+                P128Pow5T3Bn,
+                ConstantLength<POSEIDON_LEN>,
+                POSEIDON_WIDTH,
+                POSEIDON_RATE,
+            >::init()
+            .hash([instance, *m]);
+        }
+
+        vec![vec![instance]]
     }
 
     // check if ga and g2a have the same exponent
@@ -358,19 +369,19 @@ mod tests {
         #[cfg(not(feature = "g2chip"))]
         {
             mock_dkg_circuit::<5, 9>();
-            //   mock_dkg_circuit::<11, 21>();
-            //    mock_dkg_circuit::<22, 43>();
-            //    mock_dkg_circuit::<45, 89>();
-            //    mock_dkg_circuit::<90, 178>();
+            //   mock_dkg_circuit::<11, 20>();
+            //    mock_dkg_circuit::<22, 42>();
+            //    mock_dkg_circuit::<44, 87>();
+            //    mock_dkg_circuit::<88, 175>();
         }
 
         #[cfg(feature = "g2chip")]
         {
-            mock_dkg_circuit::<3, 5>();
+            mock_dkg_circuit::<3, 4>();
             //  mock_dkg_circuit::<9, 16>();
-            //   mock_dkg_circuit::<20, 39>();
-            //    mock_dkg_circuit::<43, 84>();
-            //     mock_dkg_circuit::<87, 173>();
+            //    mock_dkg_circuit::<20, 38>();
+            //    mock_dkg_circuit::<42, 82>();
+            // mock_dkg_circuit::<86, 170>();
         }
     }
 
@@ -508,24 +519,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    // #[ignore]
     fn test_dkg_proof() {
         #[cfg(not(feature = "g2chip"))]
         {
             dkg_proof::<5, 9, 18>();
-            // dkg_proof::<11, 21, 19>();
-            //  dkg_proof::<22, 43, 20>();
-            //  dkg_proof::<45, 89, 21>();
-            //  dkg_proof::<90, 178, 22>();
+            // dkg_proof::<11, 20, 19>();
+            //  dkg_proof::<22, 42, 20>();
+            //  dkg_proof::<44, 87, 21>();
+            //  dkg_proof::<88, 175, 22>();
         }
 
         #[cfg(feature = "g2chip")]
         {
-            dkg_proof::<3, 5, 18>();
+            dkg_proof::<3, 4, 18>();
             //  dkg_proof::<9, 16, 19>();
-            //  dkg_proof::<20, 39, 20>();
-            //  dkg_proof::<43, 84, 21>();
-            //  dkg_proof::<88, 174, 22>();
+            //  dkg_proof::<20, 38, 20>();
+            //  dkg_proof::<42, 82, 21>();
+            //  dkg_proof::<86, 170, 22>();
         }
     }
 
