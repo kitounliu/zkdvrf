@@ -24,6 +24,9 @@ subtle = "2.4"
 blake2b_simd = "1"
 log = "0.4"
 anyhow = "1.0"
+num = "0.4"
+eth-types = { package = "eth-types", git = "https://github.com/kitounliu/zkevm-circuits.git",  branch = "grumpkin" }
+zkevm-circuits = { package = "zkevm-circuits", git = "https://github.com/kitounliu/zkevm-circuits.git",  branch = "grumpkin" }
 
 [dev-dependencies]
 ark-std = { version = "0.3", features = ["print-trace"] }
@@ -31,11 +34,12 @@ rand_chacha = "0.3.1"
 criterion = { version = "0.4", features = ["html_reports"] }
 env_logger = "0.9.0"
 halo2_solidity_verifier = { git = "https://github.com/kitounliu/halo2-solidity-verifier.git", branch = "grumpkin", features = ["evm"] }
-#snark-verifier = { path = "../local/snark-verifier/snark-verifier" }
 
 [features]
-default = []
+default = ["circuit-params"]
 g2chip = []
+circuit-params = []
+tests = ["zkevm-circuits/test-circuits"]
 
 [[bench]]
 name = "dvrf_benchmark"

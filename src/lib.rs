@@ -9,6 +9,7 @@ mod utils;
 
 pub use utils::{load_or_create_params, load_or_create_pk, load_or_create_vk};
 
+use eth_types::keccak256;
 use rand_core::RngCore;
 use std::rc::Rc;
 
@@ -20,6 +21,7 @@ use halo2wrong::curves::ff::PrimeField;
 use halo2wrong::curves::group::prime::PrimeCurveAffine;
 use halo2wrong::curves::group::Curve;
 use halo2wrong::curves::grumpkin::{Fr as GkScalar, G1Affine as GkG1};
+use halo2wrong::curves::CurveAffine;
 use halo2wrong::halo2::arithmetic::Field;
 use halo2wrong::halo2::circuit::Value;
 
@@ -27,15 +29,17 @@ use crate::dkg::is_dl_equal;
 pub use crate::dkg::{
     combine_partial_evaluations, keygen, shares, DkgShareKey, PseudoRandom, EVAL_PREFIX,
 };
-pub use crate::dkg_circuit::CircuitDkg;
+pub use crate::dkg_circuit::DkgCircuit;
 #[cfg(feature = "g2chip")]
 use crate::ecc_chip::Point2;
 pub use crate::error::Error;
 pub use crate::poseidon::P128Pow5T3Bn;
+use crate::utils::{bn_g1_bytes_le, bn_g2_bytes_le, gk_g1_bytes_le, keccak_digest_word};
 pub use crate::utils::{hash_to_curve_bn, hash_to_curve_grumpkin, mod_n, rns_setup};
 
-const BIT_LEN_LIMB: usize = 68;
+const BIT_LEN_LIMB: usize = 72;
 const NUMBER_OF_LIMBS: usize = 4;
+const LAST_BIT_LEN_LIMB: usize = BnScalar::NUM_BITS as usize - BIT_LEN_LIMB * (NUMBER_OF_LIMBS - 1);
 const POSEIDON_WIDTH: usize = 3;
 const POSEIDON_RATE: usize = 2;
 const POSEIDON_LEN: usize = 2;
@@ -114,47 +118,32 @@ pub struct DkgMemberPublicParams<const THRESHOLD: usize, const NUMBER_OF_MEMBERS
 impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
     DkgMemberPublicParams<THRESHOLD, NUMBER_OF_MEMBERS>
 {
-    pub fn instance(&self, pks: &[GkG1]) -> Vec<Vec<BnScalar>> {
+    pub fn instance(&self, pks: &[GkG1]) -> (Vec<u8>, Vec<Vec<BnScalar>>) {
         assert_eq!(pks.len(), NUMBER_OF_MEMBERS);
 
-        let (rns_base, _) = rns_setup::<BnG1>(0);
-        let rns_base = Rc::new(rns_base);
-
-        let ga_point = Point::new(Rc::clone(&rns_base), self.ga);
-        let mut public_data = ga_point.public();
-
+        let mut keccak_input_bytes = bn_g1_bytes_le(&self.ga).to_vec();
         for i in 0..NUMBER_OF_MEMBERS {
-            let gs_point = Point::new(Rc::clone(&rns_base), self.public_shares[i]);
-            public_data.extend(gs_point.public());
+            let bytes = bn_g1_bytes_le(&self.public_shares[i]);
+            keccak_input_bytes.extend(bytes);
         }
 
-        public_data.push(self.gr.x);
-        public_data.push(self.gr.y);
+        let bytes = gk_g1_bytes_le(&self.gr);
+        keccak_input_bytes.extend(bytes);
 
         for i in 0..NUMBER_OF_MEMBERS {
-            public_data.push(pks[i].x);
-            public_data.push(pks[i].y);
-            public_data.push(self.ciphers[i]);
+            let bytes = gk_g1_bytes_le(&pks[i]);
+            keccak_input_bytes.extend(bytes);
+            keccak_input_bytes.extend(self.ciphers[i].to_bytes());
         }
 
         #[cfg(feature = "g2chip")]
-        let g2a_point = Point2::new(Rc::clone(&rns_base), self.g2a);
-        #[cfg(feature = "g2chip")]
-        public_data.extend(g2a_point.public());
-
-        let mut instance = public_data[0];
-        for m in public_data.iter().skip(1) {
-            instance = Hash::<
-                _,
-                P128Pow5T3Bn,
-                ConstantLength<POSEIDON_LEN>,
-                POSEIDON_WIDTH,
-                POSEIDON_RATE,
-            >::init()
-            .hash([instance, *m]);
+        {
+            let bytes = bn_g2_bytes_le(&self.g2a);
+            keccak_input_bytes.extend(bytes);
         }
 
-        vec![vec![instance]]
+        let digest = keccak_digest_word(&keccak_input_bytes);
+        (keccak_input_bytes, vec![vec![digest.lo(), digest.hi()]])
     }
 
     // check if ga and g2a have the same exponent
@@ -237,28 +226,29 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
         })
     }
 
-    pub fn circuit(&self, mut rng: impl RngCore) -> CircuitDkg<THRESHOLD, NUMBER_OF_MEMBERS> {
+    pub fn circuit(
+        &self,
+        mut rng: impl RngCore,
+    ) -> (DkgCircuit<THRESHOLD, NUMBER_OF_MEMBERS>, Vec<Vec<BnScalar>>) {
         let coeffs: Vec<_> = self.coeffs.iter().map(|a| Value::known(*a)).collect();
         let public_keys: Vec<_> = self
             .public_keys
             .iter()
             .map(|pk| Value::known(*pk))
             .collect();
-
         let grumpkin_aux_generator = Value::known(GkG1::random(&mut rng));
-        let circuit = CircuitDkg::<THRESHOLD, NUMBER_OF_MEMBERS>::new(
+        let (keccak_input, instance) = self.public_params.instance(&self.public_keys);
+
+        let circuit = DkgCircuit::<THRESHOLD, NUMBER_OF_MEMBERS>::new(
             coeffs,
             Value::known(self.r),
             public_keys,
             DEFAULT_WINDOW_SIZE,
             grumpkin_aux_generator,
+            keccak_input,
         );
 
-        circuit
-    }
-
-    pub fn instance(&self) -> Vec<Vec<BnScalar>> {
-        self.public_params.instance(&self.public_keys)
+        (circuit, instance)
     }
 
     pub fn member_public_params(&self) -> &DkgMemberPublicParams<THRESHOLD, NUMBER_OF_MEMBERS> {
@@ -357,12 +347,18 @@ mod tests {
         // simulate member 1
         let dkg_params =
             DkgMemberParams::<THRESHOLD, NUMBER_OF_MEMBERS>::new(1, &pks, &mut rng).unwrap();
-        let circuit = dkg_params.circuit(&mut rng);
-        let instance = dkg_params.instance();
-        println!("instance size {:?}", instance[0].len());
-        mock_prover_verify(&circuit, instance);
+        let (circuit, instance) = dkg_params.circuit(&mut rng);
+        println!(
+            "(threshold, total) ({:?}, {:?}), instance size {:?}",
+            THRESHOLD,
+            NUMBER_OF_MEMBERS,
+            instance[0].len()
+        );
+        println!("hash in instance = {:?}", instance);
+
         let dimension = DimensionMeasurement::measure(&circuit).unwrap();
         println!("dimention: {:?}", dimension);
+        mock_prover_verify(&circuit, instance);
     }
 
     #[test]
@@ -402,17 +398,16 @@ mod tests {
         #[cfg(feature = "g2chip")]
         const NUMBER_OF_MEMBERS: usize = 5;
 
-        let degree = 18;
+        let degree = 19;
 
         let (pks, _) = get_members::<NUMBER_OF_MEMBERS>(&mut rng);
         // simulate member 1
         let dkg_params =
             DkgMemberParams::<THRESHOLD, NUMBER_OF_MEMBERS>::new(1, &pks, &mut rng).unwrap();
-        let circuit1 = dkg_params.circuit(&mut rng);
-        let instance1 = dkg_params.instance();
+        let (circuit1, instance1) = dkg_params.circuit(&mut rng);
         mock_prover_verify(&circuit1, instance1);
 
-        let circuit2 = CircuitDkg::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
+        let circuit2 = DkgCircuit::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
 
         let setup_message = format!("dkg setup with degree = {}", degree);
         let start1 = start_timer!(|| setup_message);
@@ -444,8 +439,7 @@ mod tests {
         let (mpks, _) = get_members::<NUMBER_OF_MEMBERS>(&mut rng);
         let dkg_params =
             DkgMemberParams::<THRESHOLD, NUMBER_OF_MEMBERS>::new(1, &mpks, &mut rng).unwrap();
-        let circuit = dkg_params.circuit(&mut rng);
-        let instance = dkg_params.instance();
+        let (circuit, instance) = dkg_params.circuit(&mut rng);
         let instance_ref = instance.iter().map(|i| i.as_slice()).collect::<Vec<_>>();
 
         let dimension = DimensionMeasurement::measure(&circuit).unwrap();
@@ -483,7 +477,7 @@ mod tests {
             Challenge255<BnG1>,
             _,
             Blake2bWrite<Vec<u8>, BnG1, Challenge255<BnG1>>,
-            CircuitDkg<THRESHOLD, NUMBER_OF_MEMBERS>,
+            DkgCircuit<THRESHOLD, NUMBER_OF_MEMBERS>,
         >(
             &general_params,
             &pk,
@@ -524,7 +518,7 @@ mod tests {
     fn test_dkg_proof() {
         #[cfg(not(feature = "g2chip"))]
         {
-            dkg_proof::<5, 9, 18>();
+            dkg_proof::<5, 9, 19>();
             // dkg_proof::<11, 20, 19>();
             //  dkg_proof::<22, 42, 20>();
             //  dkg_proof::<44, 87, 21>();
@@ -553,8 +547,7 @@ mod tests {
         let (mpks, _) = get_members::<NUMBER_OF_MEMBERS>(&mut rng);
         let dkg_params =
             DkgMemberParams::<THRESHOLD, NUMBER_OF_MEMBERS>::new(1, &mpks, &mut rng).unwrap();
-        let circuit = dkg_params.circuit(&mut rng);
-        let instance = dkg_params.instance();
+        let (circuit, instance) = dkg_params.circuit(&mut rng);
         let instance_ref = instance.iter().map(|i| i.as_slice()).collect::<Vec<_>>();
 
         let dimension = DimensionMeasurement::measure(&circuit).unwrap();
@@ -582,7 +575,7 @@ mod tests {
             Challenge255<BnG1>,
             _,
             Blake2bWrite<Vec<u8>, BnG1, Challenge255<BnG1>>,
-            CircuitDkg<THRESHOLD, NUMBER_OF_MEMBERS>,
+            DkgCircuit<THRESHOLD, NUMBER_OF_MEMBERS>,
         >(
             &general_params,
             &pk,

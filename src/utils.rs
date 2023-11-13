@@ -1,22 +1,23 @@
 use crate::hash_to_curve::svdw_hash_to_curve;
 use crate::{
-    CircuitDkg, BIT_LEN_LIMB, DEFAULT_WINDOW_SIZE, NUMBER_OF_LIMBS, NUMBER_OF_LOOKUP_LIMBS,
+    DkgCircuit, BIT_LEN_LIMB, DEFAULT_WINDOW_SIZE, NUMBER_OF_LIMBS, NUMBER_OF_LOOKUP_LIMBS,
 };
 use anyhow::Result;
+use eth_types::{keccak256, Word};
 use halo2_ecc::integer::rns::Rns;
+use halo2wrong::curves::grumpkin::G1Affine as GkG1;
 use halo2wrong::curves::{
-    bn256::{self, Bn256},
-    grumpkin, CurveAffine, CurveExt,
+    bn256::{self, Bn256, Fr as BnScalar, G1Affine as BnG1, G2Affine as BnG2},
+    grumpkin, Coordinates, CurveAffine, CurveExt,
 };
 use halo2wrong::halo2::plonk::{keygen_pk, keygen_vk, ProvingKey, VerifyingKey};
 use halo2wrong::halo2::poly::commitment::Params;
 use halo2wrong::halo2::poly::kzg::commitment::ParamsKZG;
 use halo2wrong::halo2::SerdeFormat;
 use halo2wrong::utils::{big_to_fe, fe_to_big};
-use std::fmt::format;
 use std::fs::{metadata, File};
 use std::io::BufReader;
-use std::path::Path;
+use zkevm_circuits::util::word;
 
 pub(crate) const DEFAULT_SERDE_FORMAT: SerdeFormat = SerdeFormat::RawBytesUnchecked;
 pub(crate) const MAX_DEGREE: usize = 22;
@@ -140,9 +141,11 @@ pub fn load_pk<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>(
     };
     let f = File::open(pk_path)?;
 
-    let pk = ProvingKey::read::<_, CircuitDkg<THRESHOLD, NUMBER_OF_MEMBERS>>(
+    let pk = ProvingKey::read::<_, DkgCircuit<THRESHOLD, NUMBER_OF_MEMBERS>>(
         &mut BufReader::new(f),
         serde_format,
+        #[cfg(feature = "circuit-params")]
+        (),
     )?;
     log::info!("load pk successfully!");
     Ok(pk)
@@ -166,9 +169,11 @@ pub fn load_vk<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>(
     };
     let f = File::open(vk_path)?;
 
-    let vk = VerifyingKey::read::<_, CircuitDkg<THRESHOLD, NUMBER_OF_MEMBERS>>(
+    let vk = VerifyingKey::read::<_, DkgCircuit<THRESHOLD, NUMBER_OF_MEMBERS>>(
         &mut BufReader::new(f),
         serde_format,
+        #[cfg(feature = "circuit-params")]
+        (),
     )?;
     log::info!("load vk successfully!");
     Ok(vk)
@@ -193,7 +198,7 @@ pub fn load_or_create_vk<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
     }
 
     log::info!("load vk failed; create and store a new vk!");
-    let circuit_dummy = CircuitDkg::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
+    let circuit_dummy = DkgCircuit::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
     let vk = keygen_vk(params, &circuit_dummy).expect("keygen_vk should not fail");
     let vk_path = {
         // auto load
@@ -229,7 +234,7 @@ pub fn load_or_create_pk<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
 
     log::info!("load pk failed; create and store a new vk and pk!");
     let vk = load_or_create_vk::<THRESHOLD, NUMBER_OF_MEMBERS>(params_dir, params, degree)?;
-    let circuit_dummy = CircuitDkg::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
+    let circuit_dummy = DkgCircuit::<THRESHOLD, NUMBER_OF_MEMBERS>::dummy(DEFAULT_WINDOW_SIZE);
     let pk = keygen_pk(params, vk, &circuit_dummy).expect("keygen_pk should not fail");
     let pk_path = {
         // auto load
@@ -243,6 +248,38 @@ pub fn load_or_create_pk<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
     pk.write(&mut f_pk, DEFAULT_SERDE_FORMAT)?;
 
     Ok(pk)
+}
+
+/// Return the bn256 G1 (x, y) coordinates in little endian bytes.
+pub fn bn_g1_bytes_le(g: &BnG1) -> [u8; 64] {
+    let g_coord = Option::<Coordinates<_>>::from(g.coordinates()).expect("point is the identity");
+    let mut g_le = [0u8; 64];
+    g_le[..32].copy_from_slice(&g_coord.x().to_bytes());
+    g_le[32..].copy_from_slice(&g_coord.y().to_bytes());
+    g_le
+}
+
+/// Return the bn256 G2 (x, y) coordinates in little endian bytes.
+pub fn bn_g2_bytes_le(g: &BnG2) -> [u8; 128] {
+    let g_coord = Option::<Coordinates<_>>::from(g.coordinates()).expect("point is the identity");
+    let mut g_le = [0u8; 128];
+    g_le[..64].copy_from_slice(&g_coord.x().to_bytes());
+    g_le[64..].copy_from_slice(&g_coord.y().to_bytes());
+    g_le
+}
+
+/// Return the grumpkin G (x, y) coordinates in little endian bytes.
+pub fn gk_g1_bytes_le(g: &GkG1) -> [u8; 64] {
+    let g_coord = Option::<Coordinates<_>>::from(g.coordinates()).expect("point is the identity");
+    let mut g_le = [0u8; 64];
+    g_le[..32].copy_from_slice(&g_coord.x().to_bytes());
+    g_le[32..].copy_from_slice(&g_coord.y().to_bytes());
+    g_le
+}
+
+pub fn keccak_digest_word(input: &[u8]) -> word::Word<BnScalar> {
+    let digest = keccak256(input);
+    word::Word::from(Word::from_big_endian(&digest))
 }
 
 #[cfg(test)]
