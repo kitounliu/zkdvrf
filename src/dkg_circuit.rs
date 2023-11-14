@@ -251,6 +251,7 @@ pub struct DkgCircuit<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> {
     window_size: usize,
     grumpkin_aux_generator: Value<GkG1>,
     hash: Word<Value<BnScalar>>,
+    keccak_input: Vec<Value<BnScalar>>,
     keccak_circuit: KeccakCircuit<BnScalar>,
 }
 
@@ -263,13 +264,17 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
         public_keys: Vec<Value<GkG1>>,
         window_size: usize,
         grumpkin_aux_generator: Value<GkG1>,
-        keccak_input: Vec<u8>,
+        keccak_input_bytes: Vec<u8>,
     ) -> Self {
         assert_eq!(coeffs.len(), THRESHOLD);
         assert_eq!(public_keys.len(), NUMBER_OF_MEMBERS);
 
-        let hash = keccak_digest_word(&keccak_input).into_value();
-        let keccak_circuit = KeccakCircuit::new(0, vec![keccak_input]);
+        let hash = keccak_digest_word(&keccak_input_bytes).into_value();
+        let keccak_input: Vec<_> = keccak_input_bytes
+            .iter()
+            .map(|byte| Value::known(BnScalar::from(*byte as u64)))
+            .collect();
+        let keccak_circuit = KeccakCircuit::new(0, vec![keccak_input_bytes]);
 
         DkgCircuit {
             coeffs: coeffs
@@ -282,6 +287,7 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
             window_size,
             grumpkin_aux_generator,
             hash,
+            keccak_input,
             keccak_circuit,
         }
     }
@@ -293,9 +299,10 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
         let grumpkin_aux_generator = Value::unknown();
 
         let keccak_len = keccak_input_len::<NUMBER_OF_MEMBERS>();
-        let keccak_input: Vec<_> = (0..keccak_len).map(|_| 0u8).collect();
+        let keccak_input_bytes: Vec<_> = (0..keccak_len).map(|_| 0u8).collect();
         let hash = Word::new([Value::unknown(); 2]);
-        let keccak_circuit = KeccakCircuit::new(0, vec![keccak_input]);
+        let keccak_input: Vec<_> = (0..keccak_len).map(|_| Value::unknown()).collect();
+        let keccak_circuit = KeccakCircuit::new(0, vec![keccak_input_bytes]);
 
         DkgCircuit {
             coeffs: coeffs
@@ -308,6 +315,7 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
             window_size,
             grumpkin_aux_generator,
             hash,
+            keccak_input,
             keccak_circuit,
         }
     }
@@ -430,7 +438,8 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
 
     fn assign_rlc(
         &self,
-        input_bytes: &[AssignedValue<BnScalar>],
+        input_values: &[Value<BnScalar>],
+        input_assigned: &[AssignedValue<BnScalar>],
         config: &DkgCircuitConfig,
         main_gate: &MainGate<BnScalar>,
         challenges: &Challenges<Value<BnScalar>>,
@@ -447,13 +456,20 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
                 let keccak_rand = challenges.keccak_input();
 
                 let zero = main_gate.assign_constant(ctx, BnScalar::ZERO)?;
-                let input_padded: Vec<_> = iter::repeat_with(|| &zero)
-                    .take(
-                        Integer::next_multiple_of(&input_bytes.len(), &advices.len())
-                            - input_bytes.len(),
-                    )
-                    .chain(input_bytes.into_iter())
+
+                let input_pairs: Vec<_> = input_assigned
+                    .iter()
+                    .zip(input_values.iter())
+                    .map(|(x, y)| (x.cell(), *y))
                     .collect();
+                let input_padded: Vec<_> =
+                    iter::repeat_with(|| (zero.cell(), Value::known(BnScalar::ZERO)))
+                        .take(
+                            Integer::next_multiple_of(&input_pairs.len(), &advices.len())
+                                - input_pairs.len(),
+                        )
+                        .chain(input_pairs.into_iter())
+                        .collect();
 
                 for (chunk_idx, chunk) in input_padded.chunks_exact(advices.len()).enumerate() {
                     ctx.enable(config.q_rlc_keccak_input)?;
@@ -462,14 +478,13 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
                     for ((idx, column), &term) in
                         (chunk_idx * chunk.len()..).zip(advices).zip(chunk)
                     {
-                        let term_value = term.value().map(|v| *v);
                         let copied = ctx.assign_advice(
                             || format!("keccak_input_byte[{idx}]"),
                             column,
-                            term_value,
+                            term.1,
                         )?;
 
-                        ctx.constrain_equal(term.cell(), copied.cell())?;
+                        ctx.constrain_equal(term.0, copied.cell())?;
                     }
                     if chunk_idx == 0 {
                         ctx.constrain_equal(zero.cell(), assigned_rlc.cell())?;
@@ -477,7 +492,7 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize>
 
                     rlc = chunk
                         .iter()
-                        .map(|term| term.value())
+                        .map(|term| term.1)
                         .fold(rlc, |acc, input| acc * keccak_rand + input);
                     ctx.next();
                 }
@@ -759,7 +774,10 @@ impl<const THRESHOLD: usize, const NUMBER_OF_MEMBERS: usize> Circuit<BnScalar>
         }
 
         // assign rlc from keccak_input_bytes
+        assert_eq!(self.keccak_input.len(), keccak_input_bytes.len());
+
         let assigned_rlc = self.assign_rlc(
+            &self.keccak_input,
             &keccak_input_bytes,
             &config,
             &main_gate,

@@ -9,12 +9,9 @@ mod utils;
 
 pub use utils::{load_or_create_params, load_or_create_pk, load_or_create_vk};
 
-use eth_types::keccak256;
 use rand_core::RngCore;
-use std::rc::Rc;
 
 pub use halo2_ecc::integer::NUMBER_OF_LOOKUP_LIMBS;
-use halo2_ecc::Point;
 use halo2_gadgets::poseidon::primitives::{ConstantLength, Hash};
 use halo2wrong::curves::bn256::{Fr as BnScalar, G1Affine as BnG1, G2Affine as BnG2};
 use halo2wrong::curves::ff::PrimeField;
@@ -30,8 +27,6 @@ pub use crate::dkg::{
     combine_partial_evaluations, keygen, shares, DkgShareKey, PseudoRandom, EVAL_PREFIX,
 };
 pub use crate::dkg_circuit::DkgCircuit;
-#[cfg(feature = "g2chip")]
-use crate::ecc_chip::Point2;
 pub use crate::error::Error;
 pub use crate::poseidon::P128Pow5T3Bn;
 use crate::utils::{bn_g1_bytes_le, bn_g2_bytes_le, gk_g1_bytes_le, keccak_digest_word};
@@ -354,7 +349,6 @@ mod tests {
             NUMBER_OF_MEMBERS,
             instance[0].len()
         );
-        println!("hash in instance = {:?}", instance);
 
         let dimension = DimensionMeasurement::measure(&circuit).unwrap();
         println!("dimention: {:?}", dimension);
@@ -365,20 +359,18 @@ mod tests {
     fn test_dkg_circuit() {
         #[cfg(not(feature = "g2chip"))]
         {
-            mock_dkg_circuit::<5, 9>();
-            //   mock_dkg_circuit::<11, 20>();
-            //    mock_dkg_circuit::<22, 42>();
-            //    mock_dkg_circuit::<44, 87>();
-            //    mock_dkg_circuit::<88, 175>();
+            mock_dkg_circuit::<11, 21>();
+            //   mock_dkg_circuit::<22, 43>();
+            //    mock_dkg_circuit::<45, 88>();
+            //    mock_dkg_circuit::<90, 178>();
         }
 
         #[cfg(feature = "g2chip")]
         {
-            mock_dkg_circuit::<3, 4>();
-            //  mock_dkg_circuit::<9, 16>();
+            mock_dkg_circuit::<9, 16>();
             //    mock_dkg_circuit::<20, 38>();
-            //    mock_dkg_circuit::<42, 82>();
-            // mock_dkg_circuit::<86, 170>();
+            //    mock_dkg_circuit::<42, 83>();
+            // mock_dkg_circuit::<87, 173>();
         }
     }
 
@@ -514,24 +506,22 @@ mod tests {
     }
 
     #[test]
-    // #[ignore]
+    #[ignore]
     fn test_dkg_proof() {
         #[cfg(not(feature = "g2chip"))]
         {
-            dkg_proof::<5, 9, 19>();
-            // dkg_proof::<11, 20, 19>();
-            //  dkg_proof::<22, 42, 20>();
-            //  dkg_proof::<44, 87, 21>();
-            //  dkg_proof::<88, 175, 22>();
+            dkg_proof::<11, 21, 19>();
+            //  dkg_proof::<22, 43, 20>();
+            //  dkg_proof::<45, 88, 21>();
+            //  dkg_proof::<90, 178, 22>();
         }
 
         #[cfg(feature = "g2chip")]
         {
-            dkg_proof::<3, 4, 18>();
-            //  dkg_proof::<9, 16, 19>();
+            dkg_proof::<9, 16, 19>();
             //  dkg_proof::<20, 38, 20>();
-            //  dkg_proof::<42, 82, 21>();
-            //  dkg_proof::<86, 170, 22>();
+            //  dkg_proof::<42, 83, 21>();
+            //  dkg_proof::<87, 173, 22>();
         }
     }
 
