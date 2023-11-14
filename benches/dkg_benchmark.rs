@@ -104,11 +104,10 @@ mod dkg_benches {
         name = dkg_benches;
         config = Criterion::default();
         targets =
-            dkg_proof_verify::<5,9,18>,
-    //        dkg_proof_verify::<11,20,19>,
-    //        dkg_proof_verify::<22,42,20>,
-    //        dkg_proof_verify::<44,87,21>,
-    //        dkg_proof_verify::<88,175,22>,
+            dkg_proof_verify::<11,21,19>,
+    //        dkg_proof_verify::<22,43,20>,
+    //        dkg_proof_verify::<45,88,21>,
+    //        dkg_proof_verify::<90,178,22>,
     }
 
     #[cfg(feature = "g2chip")]
@@ -116,11 +115,10 @@ mod dkg_benches {
         name = dkg_benches;
         config = Criterion::default();
         targets =
-            dkg_proof_verify::<3,4,18>,
-    //        dkg_proof_verify::<9,16,19>,
+            dkg_proof_verify::<9,16,19>,
     //        dkg_proof_verify::<20,38,20>,
-    //        dkg_proof_verify::<42,82,21>,
-    //        dkg_proof_verify::<86,170,22>,
+    //        dkg_proof_verify::<42,83,21>,
+    //        dkg_proof_verify::<87,173,22>,
     }
 }
 
